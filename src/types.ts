@@ -78,6 +78,13 @@ export interface TokenizeResponse {
 }
 
 /**
+ * Response from POST /apply-template (llama-server)
+ */
+export interface ApplyTemplateResponse {
+	prompt: string;
+}
+
+/**
  * OpenAI-compatible API types for /v1/chat/completions
  */
 
@@ -118,6 +125,15 @@ export interface OpenAIChatMessage {
 	tool_calls?: OpenAIToolCall[];
 	tool_call_id?: string; // For tool role messages
 	reasoning_content?: string; // For thinking tokens (llama-server extension)
+}
+
+/**
+ * Result of prepareCompletionRequest: trimmed messages and computed max_tokens for /v1/chat/completions
+ */
+export interface PreparedCompletionRequest {
+	openAIMessages: OpenAIChatMessage[];
+	requestTokenCount: number;
+	max_tokens: number;
 }
 
 /**

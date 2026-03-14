@@ -11,6 +11,8 @@ import {
 	Model,
 	TokenizeRequest,
 	TokenizeResponse,
+	ApplyTemplateResponse,
+	PreparedCompletionRequest,
 	OpenAIChatMessage,
 	OpenAITool,
 	OpenAIToolCall,
@@ -383,6 +385,7 @@ export async function* streamChatCompletion(
 		max_tokens?: number;
 		getThinkingTokens?: (msg: LanguageModelChatMessage) => string | undefined;
 		isNewUserMessage?: boolean;
+		preparedRequest?: PreparedCompletionRequest;
 	},
 	apiToken?: string,
 	endpointHeaders?: Record<string, string>,
@@ -399,12 +402,13 @@ export async function* streamChatCompletion(
 > {
 	const url = `${serverUrl}/v1/chat/completions`;
 
-	// Convert messages to OpenAI format
-	const openAIMessages = convertVSCodeMessagesToOpenAI(
+	// Use prepared request when provided; otherwise convert messages and use options.max_tokens
+	const openAIMessages = options.preparedRequest?.openAIMessages ?? convertVSCodeMessagesToOpenAI(
 		messages,
 		options.getThinkingTokens,
 		options.isNewUserMessage ?? false
 	);
+	const max_tokens = options.preparedRequest?.max_tokens ?? options.max_tokens;
 
 	// Convert tools to OpenAI format
 	const openAITools = convertVSCodeToolsToOpenAI(options.tools);
@@ -424,7 +428,7 @@ export async function* streamChatCompletion(
 		model: modelId,
 		messages: openAIMessages,
 		stream: true,
-		max_tokens: options.max_tokens,
+		max_tokens,
 		reasoning_format: 'deepseek', // Enable thinking token extraction
 		parse_tool_calls: true, // Enable tool call parsing
 		parallel_tool_calls: true, // Enable parallel tool calls
@@ -636,6 +640,67 @@ export async function* streamChatCompletion(
 	}
 }
 
+/**
+ * Apply chat template to messages (POST /apply-template).
+ * Returns the templated prompt string. Model in body for router mode.
+ */
+export async function applyTemplate(
+	serverUrl: string,
+	modelId: string,
+	openAIMessages: OpenAIChatMessage[],
+	apiToken?: string,
+	endpointHeaders?: Record<string, string>,
+	endpointRequestBody?: Record<string, unknown>,
+	requestTimeoutMs?: number,
+	signal?: AbortSignal
+): Promise<string> {
+	const url = `${serverUrl}/apply-template`;
+	const timeoutMs = requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+	const dispatcher = getDispatcher(timeoutMs);
+
+	const requestBody: Record<string, unknown> = {
+		model: modelId,
+		messages: openAIMessages,
+		...(endpointRequestBody || {}),
+	};
+
+	const headers: Record<string, string> = {
+		'Content-Type': 'application/json',
+	};
+	if (apiToken) {
+		headers['Authorization'] = `Bearer ${apiToken}`;
+	}
+	if (endpointHeaders) {
+		Object.assign(headers, endpointHeaders);
+	}
+
+	try {
+		const response = await fetch(url, {
+			method: 'POST',
+			headers,
+			body: JSON.stringify(requestBody),
+			dispatcher,
+			signal,
+		});
+
+		if (!response.ok) {
+			const errorText = await response.text().catch(() => 'Unknown error');
+			logError(`Failed to apply template: ${response.statusText}`, 'applyTemplate');
+			const parsed = parseServerError(errorText);
+			const formatted = formatServerErrorMessage(parsed, response.status, errorText || response.statusText);
+			throw new Error(formatted);
+		}
+
+		const data = (await response.json()) as ApplyTemplateResponse;
+		return typeof data.prompt === 'string' ? data.prompt : '';
+	} catch (error) {
+		if (error instanceof Error && error.name === 'AbortError') {
+			throw error;
+		}
+		handleApiError(error, 'applyTemplate', 'Failed to apply template', url);
+	}
+}
+
 const TOKEN_COUNT_CACHE_MAX = 3000;
 const tokenCountCache = new Map<string, number>();
 
@@ -768,6 +833,109 @@ export async function tokenize(
 	} catch (error) {
 		handleApiError(error, 'tokenize', 'Failed to tokenize', url);
 	}
+}
+
+/**
+ * Get token count of the templated prompt for the given OpenAI-format messages.
+ * Uses apply-template then tokenize (not getTokenCount) to avoid cache side effects during trim loop.
+ */
+export async function getTemplatedPromptTokenCount(
+	serverUrl: string,
+	modelId: string,
+	openAIMessages: OpenAIChatMessage[],
+	apiToken?: string,
+	endpointHeaders?: Record<string, string>,
+	endpointRequestBody?: Record<string, unknown>,
+	requestTimeoutMs?: number,
+	signal?: AbortSignal
+): Promise<number> {
+	const prompt = await applyTemplate(
+		serverUrl,
+		modelId,
+		openAIMessages,
+		apiToken,
+		endpointHeaders,
+		endpointRequestBody,
+		requestTimeoutMs,
+		signal
+	);
+	return tokenize(
+		serverUrl,
+		modelId,
+		prompt,
+		apiToken,
+		endpointHeaders,
+		endpointRequestBody,
+		requestTimeoutMs
+	);
+}
+
+/**
+ * Prepare completion request: ensure templated prompt fits within
+ * maxInputTokens + 0.2 * maxOutputTokens by dropping oldest thinking blocks,
+ * then compute max_tokens = min(maxOutputTokens, maxInputTokens + maxOutputTokens - requestTokenCount).
+ */
+export async function prepareCompletionRequest(
+	serverUrl: string,
+	modelId: string,
+	messages: LanguageModelChatMessage[],
+	options: {
+		getThinkingTokens?: (msg: LanguageModelChatMessage) => string | undefined;
+		isNewUserMessage?: boolean;
+	},
+	modelLimits: { maxInputTokens: number; maxOutputTokens: number },
+	apiToken?: string,
+	endpointHeaders?: Record<string, string>,
+	endpointRequestBody?: Record<string, unknown>,
+	requestTimeoutMs?: number,
+	signal?: AbortSignal
+): Promise<PreparedCompletionRequest> {
+	const openAIMessages = convertVSCodeMessagesToOpenAI(
+		messages,
+		options.getThinkingTokens,
+		options.isNewUserMessage ?? false
+	);
+
+	const limit = modelLimits.maxInputTokens + modelLimits.maxOutputTokens * 0.2;
+
+	// Trim oldest reasoning_content until templated count <= limit
+	let requestTokenCount: number;
+	for (;;) {
+		requestTokenCount = await getTemplatedPromptTokenCount(
+			serverUrl,
+			modelId,
+			openAIMessages,
+			apiToken,
+			endpointHeaders,
+			endpointRequestBody,
+			requestTimeoutMs,
+			signal
+		);
+		if (requestTokenCount <= limit) {
+			break;
+		}
+		const idx = openAIMessages.findIndex(
+			(m) => m.role === 'assistant' && m.reasoning_content !== undefined && m.reasoning_content !== ''
+		);
+		if (idx === -1) {
+			break;
+		}
+		delete (openAIMessages[idx] as OpenAIChatMessage & { reasoning_content?: string }).reasoning_content;
+	}
+
+	const max_tokens = Math.max(
+		0,
+		Math.min(
+			modelLimits.maxOutputTokens,
+			modelLimits.maxInputTokens + modelLimits.maxOutputTokens - requestTokenCount
+		)
+	);
+
+	return {
+		openAIMessages,
+		requestTokenCount,
+		max_tokens,
+	};
 }
 
 /** Fixed n_predict for inline completion (FIM) requests */

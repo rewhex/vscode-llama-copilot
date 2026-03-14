@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { streamChatCompletion, getTokenCount } from './llamaClient';
+import { streamChatCompletion, getTokenCount, prepareCompletionRequest } from './llamaClient';
 import { EndpointsConfig } from './types';
 import { RuleManager } from './cursor-rules/ruleManager';
 import { CursorRulesTool, CURSOR_RULES_TOOL_NAME, resolveAndFormatRules } from './cursor-rules/index';
@@ -240,7 +240,7 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 		serverUrl: string,
 		modelId: string,
 		messages: vscode.LanguageModelChatMessage[],
-		maxTokens: number,
+		modelLimits: { maxInputTokens: number; maxOutputTokens: number },
 		apiToken: string | undefined,
 		headers: Record<string, string>,
 		requestBody: Record<string, unknown>,
@@ -251,15 +251,29 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 		statusBarRef: { disposable: vscode.Disposable | undefined },
 		clearStatusBar: () => void
 	): Promise<void> {
-		const completionOptions = {
-			tools: tools,
-			max_tokens: maxTokens,
-			getThinkingTokens: undefined,
-			isNewUserMessage: false,
-		};
-
 		const abortController = new AbortController();
 		token.onCancellationRequested(() => abortController.abort());
+
+		const preparedRequest = await prepareCompletionRequest(
+			serverUrl,
+			modelId,
+			messages,
+			{ getThinkingTokens: undefined, isNewUserMessage: false },
+			modelLimits,
+			apiToken,
+			headers,
+			requestBody,
+			requestTimeoutMs,
+			abortController.signal
+		);
+
+		const completionOptions = {
+			tools: tools,
+			max_tokens: modelLimits.maxOutputTokens,
+			getThinkingTokens: undefined,
+			isNewUserMessage: false,
+			preparedRequest,
+		};
 
 		// Stream follow-up response
 		try {
@@ -377,6 +391,29 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 				? [...(options.tools || []), cursorRulesTool]
 				: options.tools || [];
 
+			const requestTimeoutMs = getRequestTimeoutMs();
+
+			const abortController = new AbortController();
+			token.onCancellationRequested(() => abortController.abort());
+
+			const preparedRequest = await prepareCompletionRequest(
+				endpointConfig.url,
+				baseModelId,
+				messages,
+				{
+					getThinkingTokens: includeThinkingTokens
+						? (msg: vscode.LanguageModelChatMessage) => this.thinkingTokens.getForMessage(msg)
+						: undefined,
+					isNewUserMessage: isNewUserMsg,
+				},
+				{ maxInputTokens: model.maxInputTokens, maxOutputTokens: model.maxOutputTokens },
+				endpointConfig.apiToken,
+				mergedHeaders,
+				mergedRequestBody,
+				requestTimeoutMs,
+				abortController.signal
+			);
+
 			const completionOptions = {
 				tools: tools,
 				max_tokens: maxTokens,
@@ -384,6 +421,7 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 					? (msg: vscode.LanguageModelChatMessage) => this.thinkingTokens.getForMessage(msg)
 					: undefined,
 				isNewUserMessage: isNewUserMsg,
+				preparedRequest,
 			};
 
 			// Track thinking tokens for the current response
@@ -395,11 +433,6 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 				result: string;
 				ruleNames: string[];
 			}> = [];
-
-			const requestTimeoutMs = getRequestTimeoutMs();
-
-			const abortController = new AbortController();
-			token.onCancellationRequested(() => abortController.abort());
 
 			// Stream chat completion
 			let promptProgressShown = false;
@@ -523,7 +556,7 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 					endpointConfig.url,
 					baseModelId,
 					updatedMessages,
-					model.maxOutputTokens,
+					{ maxInputTokens: model.maxInputTokens, maxOutputTokens: model.maxOutputTokens },
 					endpointConfig.apiToken,
 					mergedHeaders,
 					mergedRequestBody,
