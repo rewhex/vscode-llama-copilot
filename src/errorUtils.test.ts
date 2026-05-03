@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { getErrorCode, normalizeFetchError } from './errorUtils';
+import { getErrorCode, normalizeFetchError, isConnectionResetError } from './errorUtils';
 
 describe('getErrorCode', () => {
 	it('returns code from error', () => {
@@ -17,6 +17,33 @@ describe('getErrorCode', () => {
 
 	it('returns undefined when no code', () => {
 		expect(getErrorCode(new Error('x'))).toBeUndefined();
+	});
+});
+
+describe('isConnectionResetError', () => {
+	it('returns true when error has code ECONNRESET', () => {
+		const err = new Error('test') as Error & { code: string };
+		err.code = 'ECONNRESET';
+		expect(isConnectionResetError(err)).toBe(true);
+	});
+
+	it('returns true when cause has code ECONNRESET', () => {
+		const err = new Error('fetch failed', { cause: { code: 'ECONNRESET' } } as never);
+		expect(isConnectionResetError(err)).toBe(true);
+	});
+
+	it('returns false for other error codes', () => {
+		expect(isConnectionResetError(new Error('x', { cause: { code: 'ECONNREFUSED' } } as never))).toBe(false);
+		expect(isConnectionResetError(new Error('x', { cause: { code: 'ETIMEDOUT' } } as never))).toBe(false);
+	});
+
+	it('returns false when no code', () => {
+		expect(isConnectionResetError(new Error('fetch failed'))).toBe(false);
+	});
+
+	it('returns false for non-Error', () => {
+		expect(isConnectionResetError('string')).toBe(false);
+		expect(isConnectionResetError(null)).toBe(false);
 	});
 });
 

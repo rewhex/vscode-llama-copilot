@@ -18,6 +18,14 @@ export function getErrorCode(error: unknown): string | undefined {
 }
 
 /**
+ * Returns true if the error is a connection reset (ECONNRESET).
+ * Used to decide whether to retry a request with backoff.
+ */
+export function isConnectionResetError(error: unknown): boolean {
+	return getErrorCode(error) === 'ECONNRESET';
+}
+
+/**
  * Normalize fetch/network errors into a user-friendly message.
  * Returns undefined if the error is not a network/fetch error (caller should rethrow original).
  */

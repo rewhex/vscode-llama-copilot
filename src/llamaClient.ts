@@ -25,11 +25,53 @@ import {
 import { fetch, Agent } from 'undici';
 import { logRequest, logResponse, logError, logStreamStart, logStreamResponse, logTokenizeRequest, logTokenizeResponse } from './logger';
 
-import { normalizeFetchError } from './errorUtils';
+import { normalizeFetchError, isConnectionResetError } from './errorUtils';
 import { parseServerError, formatServerErrorMessage } from './serverErrorUtils';
 import * as crypto from 'crypto';
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 1200 * 1000;
+
+const CONNECTION_RESET_RETRY_MAX_ATTEMPTS = 4;
+const CONNECTION_RESET_RETRY_BASE_DELAY_MS = 200;
+
+function delayMs(ms: number, signal?: AbortSignal): Promise<void> {
+	if (signal?.aborted) {
+		return Promise.reject(new DOMException('Aborted', 'AbortError'));
+	}
+	return new Promise((resolve, reject) => {
+		const t = setTimeout(resolve, ms);
+		signal?.addEventListener('abort', () => {
+			clearTimeout(t);
+			reject(new DOMException('Aborted', 'AbortError'));
+		}, { once: true });
+	});
+}
+
+/**
+ * Runs fn(); on ECONNRESET, retries up to maxAttempts times with exponential backoff.
+ * Respects AbortSignal: does not wait/retry if signal is aborted.
+ */
+async function withConnectionResetRetry<T>(
+	fn: () => Promise<T>,
+	options?: { maxAttempts?: number; baseDelayMs?: number; signal?: AbortSignal }
+): Promise<T> {
+	const maxAttempts = options?.maxAttempts ?? CONNECTION_RESET_RETRY_MAX_ATTEMPTS;
+	const baseDelayMs = options?.baseDelayMs ?? CONNECTION_RESET_RETRY_BASE_DELAY_MS;
+	const signal = options?.signal;
+	let lastError: unknown;
+	for (let attempt = 0; attempt < maxAttempts; attempt++) {
+		try {
+			return await fn();
+		} catch (e) {
+			lastError = e;
+			if (!isConnectionResetError(e) || attempt === maxAttempts - 1) {
+				throw e;
+			}
+			await delayMs(baseDelayMs * Math.pow(2, attempt), signal);
+		}
+	}
+	throw lastError;
+}
 
 /**
  * Centralized API error handling: rethrow known errors, log, normalize fetch errors, then rethrow.
@@ -87,20 +129,22 @@ export async function fetchModels(
 	}
 	
 	try {
-		logRequest('GET', url, headers);
-		const response = await fetch(url, { headers, dispatcher });
+		return await withConnectionResetRetry(async () => {
+			logRequest('GET', url, headers);
+			const response = await fetch(url, { headers, dispatcher });
 
-		if (!response.ok) {
-			const errorText = await response.text().catch(() => 'Unknown error');
-			logError(`Failed to fetch models: ${response.statusText}`, 'fetchModels');
-			const parsed = parseServerError(errorText);
-			const formatted = formatServerErrorMessage(parsed, response.status, errorText || response.statusText);
-			throw new Error(formatted);
-		}
+			if (!response.ok) {
+				const errorText = await response.text().catch(() => 'Unknown error');
+				logError(`Failed to fetch models: ${response.statusText}`, 'fetchModels');
+				const parsed = parseServerError(errorText);
+				const formatted = formatServerErrorMessage(parsed, response.status, errorText || response.statusText);
+				throw new Error(formatted);
+			}
 
-		const data = await response.json() as ModelsResponse;
-		logResponse(response.status, response.statusText, data);
-		return data;
+			const data = await response.json() as ModelsResponse;
+			logResponse(response.status, response.statusText, data);
+			return data;
+		});
 	} catch (error) {
 		handleApiError(error, 'fetchModels', 'Failed to fetch models', url);
 	}
@@ -461,46 +505,49 @@ export async function* streamChatCompletion(
 	const dispatcher = getDispatcher(timeoutMs);
 
 	try {
-		logStreamStart('POST', url, requestBody);
-		const response = await fetch(url, {
-			method: 'POST',
-			headers,
-			body: JSON.stringify(requestBody),
-			dispatcher,
-			signal,
-		});
+		const reader = await withConnectionResetRetry(async () => {
+			logStreamStart('POST', url, requestBody);
+			const response = await fetch(url, {
+				method: 'POST',
+				headers,
+				body: JSON.stringify(requestBody),
+				dispatcher,
+				signal,
+			});
 
-		if (!response.ok) {
-			const errorText = await response.text().catch(() => 'Unknown error');
-			logError(`Failed to stream chat completion: ${response.statusText}`, 'streamChatCompletion');
-			if (response.status >= 500 && errorText.includes('Internal Server Error - proxy error')) {
-				const probe = await getSuggestedTimeoutFromModels(serverUrl, apiToken, endpointHeaders);
-				let message: string;
-				if (probe) {
-					if (probe.serverHasTimeout) {
-						message = `Llama-server reported an internal timeout. Increase the extension Request timeout (Settings → Llama Copilot) to at least ${probe.suggestedSeconds} seconds. If the server still times out, increase llama-server's --timeout (currently ${probe.currentSeconds}) to at least ${probe.suggestedSeconds} (e.g. \`--timeout ${probe.suggestedSeconds}\`).`;
+			if (!response.ok) {
+				const errorText = await response.text().catch(() => 'Unknown error');
+				logError(`Failed to stream chat completion: ${response.statusText}`, 'streamChatCompletion');
+				if (response.status >= 500 && errorText.includes('Internal Server Error - proxy error')) {
+					const probe = await getSuggestedTimeoutFromModels(serverUrl, apiToken, endpointHeaders);
+					let message: string;
+					if (probe) {
+						if (probe.serverHasTimeout) {
+							message = `Llama-server reported an internal timeout. Increase the extension Request timeout (Settings → Llama Copilot) to at least ${probe.suggestedSeconds} seconds. If the server still times out, increase llama-server's --timeout (currently ${probe.currentSeconds}) to at least ${probe.suggestedSeconds} (e.g. \`--timeout ${probe.suggestedSeconds}\`).`;
+						} else {
+							message = `Llama-server reported an internal timeout. Increase the extension Request timeout (Settings → Llama Copilot) to at least ${probe.suggestedSeconds} seconds. If the server still times out, add \`--timeout ${probe.suggestedSeconds}\` to your llama-server command.`;
+						}
 					} else {
-						message = `Llama-server reported an internal timeout. Increase the extension Request timeout (Settings → Llama Copilot) to at least ${probe.suggestedSeconds} seconds. If the server still times out, add \`--timeout ${probe.suggestedSeconds}\` to your llama-server command.`;
+						const fallbackSeconds = Math.max(3600, Math.floor(timeoutMs / 1000) * 2);
+						message = `Llama-server reported an internal timeout. Increase the extension Request timeout (Settings → Llama Copilot) to at least ${fallbackSeconds} seconds. If the server still times out, add \`--timeout ${fallbackSeconds}\` (or higher) to your llama-server command.`;
 					}
-				} else {
-					const fallbackSeconds = Math.max(3600, Math.floor(timeoutMs / 1000) * 2);
-					message = `Llama-server reported an internal timeout. Increase the extension Request timeout (Settings → Llama Copilot) to at least ${fallbackSeconds} seconds. If the server still times out, add \`--timeout ${fallbackSeconds}\` (or higher) to your llama-server command.`;
+					throw new Error(message);
 				}
-				throw new Error(message);
+				const parsed = parseServerError(errorText);
+				const formatted = formatServerErrorMessage(parsed, response.status, errorText);
+				throw new Error(formatted);
 			}
-			const parsed = parseServerError(errorText);
-			const formatted = formatServerErrorMessage(parsed, response.status, errorText);
-			throw new Error(formatted);
-		}
 
-		logStreamResponse(response.status, response.statusText);
+			logStreamResponse(response.status, response.statusText);
 
-		if (!response.body) {
-			logError('Response body is null', 'streamChatCompletion');
-			throw new Error('Response body is null');
-		}
+			if (!response.body) {
+				logError('Response body is null', 'streamChatCompletion');
+				throw new Error('Response body is null');
+			}
 
-		const reader = response.body.getReader();
+			return response.body.getReader();
+		}, { signal });
+
 		const decoder = new TextDecoder();
 		let buffer = '';
 		
@@ -675,24 +722,26 @@ export async function applyTemplate(
 	}
 
 	try {
-		const response = await fetch(url, {
-			method: 'POST',
-			headers,
-			body: JSON.stringify(requestBody),
-			dispatcher,
-			signal,
-		});
+		return await withConnectionResetRetry(async () => {
+			const response = await fetch(url, {
+				method: 'POST',
+				headers,
+				body: JSON.stringify(requestBody),
+				dispatcher,
+				signal,
+			});
 
-		if (!response.ok) {
-			const errorText = await response.text().catch(() => 'Unknown error');
-			logError(`Failed to apply template: ${response.statusText}`, 'applyTemplate');
-			const parsed = parseServerError(errorText);
-			const formatted = formatServerErrorMessage(parsed, response.status, errorText || response.statusText);
-			throw new Error(formatted);
-		}
+			if (!response.ok) {
+				const errorText = await response.text().catch(() => 'Unknown error');
+				logError(`Failed to apply template: ${response.statusText}`, 'applyTemplate');
+				const parsed = parseServerError(errorText);
+				const formatted = formatServerErrorMessage(parsed, response.status, errorText || response.statusText);
+				throw new Error(formatted);
+			}
 
-		const data = (await response.json()) as ApplyTemplateResponse;
-		return typeof data.prompt === 'string' ? data.prompt : '';
+			const data = (await response.json()) as ApplyTemplateResponse;
+			return typeof data.prompt === 'string' ? data.prompt : '';
+		}, { signal });
 	} catch (error) {
 		if (error instanceof Error && error.name === 'AbortError') {
 			throw error;
@@ -809,27 +858,29 @@ export async function tokenize(
 	}
 
 	try {
-		logTokenizeRequest(url, headers, requestBody);
-		const response = await fetch(url, {
-			method: 'POST',
-			headers,
-			body: JSON.stringify(requestBody),
-			dispatcher,
+		return await withConnectionResetRetry(async () => {
+			logTokenizeRequest(url, headers, requestBody);
+			const response = await fetch(url, {
+				method: 'POST',
+				headers,
+				body: JSON.stringify(requestBody),
+				dispatcher,
+			});
+
+			if (!response.ok) {
+				const errorText = await response.text().catch(() => 'Unknown error');
+				logError(`Failed to tokenize: ${response.statusText}`, 'tokenize');
+				const parsed = parseServerError(errorText);
+				const formatted = formatServerErrorMessage(parsed, response.status, errorText || response.statusText);
+				throw new Error(formatted);
+			}
+
+			const result = (await response.json()) as TokenizeResponse;
+			const tokenCount = Array.isArray(result.tokens) ? result.tokens.length : 0;
+			logTokenizeResponse(response.status, response.statusText, tokenCount);
+
+			return tokenCount;
 		});
-
-		if (!response.ok) {
-			const errorText = await response.text().catch(() => 'Unknown error');
-			logError(`Failed to tokenize: ${response.statusText}`, 'tokenize');
-			const parsed = parseServerError(errorText);
-			const formatted = formatServerErrorMessage(parsed, response.status, errorText || response.statusText);
-			throw new Error(formatted);
-		}
-
-		const result = (await response.json()) as TokenizeResponse;
-		const tokenCount = Array.isArray(result.tokens) ? result.tokens.length : 0;
-		logTokenizeResponse(response.status, response.statusText, tokenCount);
-
-		return tokenCount;
 	} catch (error) {
 		handleApiError(error, 'tokenize', 'Failed to tokenize', url);
 	}
@@ -985,24 +1036,26 @@ export async function requestInfill(
 	const dispatcher = getDispatcher(timeoutMs);
 
 	try {
-		const response = await fetch(url, {
-			method: 'POST',
-			headers,
-			body: JSON.stringify(requestBody),
-			dispatcher,
-			signal,
-		});
+		return await withConnectionResetRetry(async () => {
+			const response = await fetch(url, {
+				method: 'POST',
+				headers,
+				body: JSON.stringify(requestBody),
+				dispatcher,
+				signal,
+			});
 
-		if (!response.ok) {
-			const errorText = await response.text().catch(() => 'Unknown error');
-			logError(`Failed to infill: ${response.statusText}`, 'requestInfill');
-			const parsed = parseServerError(errorText);
-			const formatted = formatServerErrorMessage(parsed, response.status, errorText || response.statusText);
-			throw new Error(formatted);
-		}
+			if (!response.ok) {
+				const errorText = await response.text().catch(() => 'Unknown error');
+				logError(`Failed to infill: ${response.statusText}`, 'requestInfill');
+				const parsed = parseServerError(errorText);
+				const formatted = formatServerErrorMessage(parsed, response.status, errorText || response.statusText);
+				throw new Error(formatted);
+			}
 
-		const data = (await response.json()) as InfillResponse;
-		return typeof data.content === 'string' ? data.content : '';
+			const data = (await response.json()) as InfillResponse;
+			return typeof data.content === 'string' ? data.content : '';
+		}, { signal });
 	} catch (error) {
 		if (error instanceof Error && error.name === 'AbortError') {
 			throw error;
