@@ -1000,7 +1000,12 @@ const INFILL_N_PREDICT = 128;
 export async function requestInfill(
 	serverUrl: string,
 	modelId: string,
-	body: { input_prefix: string; input_suffix: string; input_extra?: Array<{ text: string; filename: string }> },
+	body: {
+		input_prefix: string;
+		input_suffix: string;
+		input_extra?: Array<{ text: string; filename: string }>;
+		prompt?: string;
+	},
 	timeoutMs: number,
 	signal: AbortSignal,
 	apiToken?: string,
@@ -1018,6 +1023,10 @@ export async function requestInfill(
 	};
 	if (body.input_extra && body.input_extra.length > 0) {
 		requestBody.input_extra = body.input_extra;
+	}
+	const infillPrompt = body.prompt?.trim();
+	if (infillPrompt) {
+		requestBody.prompt = infillPrompt;
 	}
 	if (endpointRequestBody) {
 		Object.assign(requestBody, endpointRequestBody);

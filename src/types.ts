@@ -266,6 +266,7 @@ export interface InfillRequest {
 	stream?: boolean;
 	n_predict?: number;
 	model?: string;
+	/** Placed after the FIM_MID marker in the infill template (llama-server /infill). */
 	prompt?: string;
 	temperature?: number;
 	[key: string]: unknown;

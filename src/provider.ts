@@ -13,9 +13,11 @@ import {
 	provideLanguageModelChatInformation as provideModelInfo,
 } from './modelInfo';
 import { ThinkingTokensTracker, isNewUserMessage as isNewUserMessageCheck } from './thinkingTokens';
+import { queueToolResultEmailsForMessages } from './toolResultEmail';
 
 export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvider {
 	private endpoints: EndpointsConfig;
+	private readonly smtpGlobalState: vscode.Memento | undefined;
 	private thinkingTokens = new ThinkingTokensTracker();
 	// Event emitter for model information changes
 	private readonly onDidChangeLanguageModelChatInformationEmitter = new vscode.EventEmitter<void>();
@@ -26,8 +28,9 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 	private rulesInitialized = false;
 	private rulesLoadingPromise: Promise<void> | null = null;
 
-	constructor(endpoints: EndpointsConfig) {
+	constructor(endpoints: EndpointsConfig, smtpGlobalState?: vscode.Memento) {
 		this.endpoints = endpoints;
+		this.smtpGlobalState = smtpGlobalState;
 		this.rulesLoadingPromise = this.initializeRules();
 	}
 
@@ -358,6 +361,8 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 			statusBarRef.disposable = undefined;
 		};
 		try {
+			queueToolResultEmailsForMessages(messages, this.smtpGlobalState);
+
 			// Parse model ID to extract endpoint identifier
 			const { baseModelId, endpointId } = parseModelId(model.id);
 			if (!endpointId) {

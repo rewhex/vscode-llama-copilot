@@ -8,6 +8,7 @@ import {
 	getInlineCompletionTimeoutMs,
 	getInlineCompletionDebounceMs,
 	getInlineCompletionMaxInputBytes,
+	getInlineCompletionPrompt,
 	isInlineCompletionContextEnabled,
 	isDebugEnabled,
 	DEBUG_INLINE_COMPLETION,
@@ -71,6 +72,7 @@ export class InlineCompletionProvider implements vscode.InlineCompletionItemProv
 				maxInputBytes,
 				otherFiles
 			);
+			const infillPrompt = getInlineCompletionPrompt();
 
 			const controller = new AbortController();
 			const timeoutMs = getInlineCompletionTimeoutMs();
@@ -84,6 +86,7 @@ export class InlineCompletionProvider implements vscode.InlineCompletionItemProv
 					prefixBytes: Buffer.byteLength(input_prefix, 'utf8'),
 					suffixBytes: Buffer.byteLength(input_suffix, 'utf8'),
 					extraCount: input_extra.length,
+					promptChars: infillPrompt.length,
 				});
 			}
 
@@ -91,7 +94,12 @@ export class InlineCompletionProvider implements vscode.InlineCompletionItemProv
 				const content = await requestInfill(
 					endpointConfig.url,
 					baseModelId,
-					{ input_prefix, input_suffix, input_extra: input_extra.length > 0 ? input_extra : undefined },
+					{
+						input_prefix,
+						input_suffix,
+						input_extra: input_extra.length > 0 ? input_extra : undefined,
+						...(infillPrompt ? { prompt: infillPrompt } : {}),
+					},
 					timeoutMs,
 					controller.signal,
 					endpointConfig.apiToken,

@@ -282,7 +282,12 @@ Override the maximum output tokens:
 
 ### Capabilities Configuration
 
-Configure model capabilities:
+For models discovered from llama-server, capabilities are inferred automatically:
+
+- **`imageInput`**: Set to `true` when the model is started with `--image-min-tokens` (vision/multimodal support in llama.cpp).
+- **`toolCalling`**: Defaults to `true` for chat models.
+
+You can override these per model in VS Code settings:
 
 ```json
 {
@@ -307,7 +312,17 @@ Configure model capabilities:
 }
 ```
 
-- `imageInput` (boolean): Whether the model supports image input
+To enable vision on llama-server, add `image-min-tokens` to your model preset (see [llama-server documentation](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md)):
+
+```ini
+[my-vision-model]
+jinja = true
+ctx-size = 32768
+image-min-tokens = 512
+hf = your-org/your-vision-model-GGUF:Q8_0
+```
+
+- `imageInput` (boolean): Whether the model supports image input. Auto-detected from `--image-min-tokens` when listed by the server; override in settings if needed (e.g. for config-only models not returned by `/models`).
 - `toolCalling` (boolean | number): Whether the model supports tool calling. Can be a boolean or a number (maximum number of tools)
 
 ## Inline completions (ghost text)
@@ -356,6 +371,7 @@ hf = sweepai/sweep-next-edit-0.5B:Q8_0
 | **Inline completion debounce (ms)** | Delay before sending an automatic (as-you-type) request. |
 | **Max input bytes** | Maximum total input size (prefix + suffix + context) sent to the server. |
 | **Include context** | When enabled, include content from other open tabs to improve suggestions. |
+| **Inline completion prompt** | Text sent as the `/infill` `prompt` field (after the FIM middle marker). Default nudges short completions; clear to omit. Endpoint or model `requestBody.prompt` overrides this. |
 | **Debug: Inline completion** | Log requests, cancellations, and errors to the "LLaMA Server API" output. |
 
 ## Cursor Rules Integration

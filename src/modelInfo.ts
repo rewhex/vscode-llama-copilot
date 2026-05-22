@@ -66,6 +66,11 @@ export function hasEmbeddings(model: Model): boolean {
 	return model.status.args?.includes('--embeddings') ?? false;
 }
 
+/** Check if model supports vision/image input (--image-min-tokens). */
+export function hasVisionCapability(model: Model): boolean {
+	return model.status.args?.includes('--image-min-tokens') ?? false;
+}
+
 /** Extract context size from model args (--ctx-size). Returns null if not found or invalid. */
 export function extractContextSize(model: Model): number | null {
 	const args = model.status.args;
@@ -106,13 +111,15 @@ export function getDefaultCapabilities(): vscode.LanguageModelChatCapabilities {
 	return { toolCalling: true, imageInput: false };
 }
 
-/** Merge model-specific capabilities with defaults. */
+/** Merge model-specific capabilities with defaults and optional server-detected vision. */
 export function getMergedCapabilities(
-	modelConfig?: { capabilities?: vscode.LanguageModelChatCapabilities }
+	modelConfig?: { capabilities?: vscode.LanguageModelChatCapabilities },
+	serverHasVision?: boolean
 ): vscode.LanguageModelChatCapabilities {
 	const defaults = getDefaultCapabilities();
-	if (!modelConfig?.capabilities) return defaults;
-	return { ...defaults, ...modelConfig.capabilities };
+	const base = serverHasVision ? { ...defaults, imageInput: true } : defaults;
+	if (!modelConfig?.capabilities) return base;
+	return { ...base, ...modelConfig.capabilities };
 }
 
 /** Create model info from config only (when model is not in server list). */
@@ -135,6 +142,7 @@ export function createModelInfoFromConfig(
 		maxOutputTokens,
 		version: '1.0.0',
 		capabilities: getMergedCapabilities(modelConfig),
+		isUserSelectable: true,
 	};
 }
 
@@ -180,7 +188,8 @@ export async function provideLanguageModelChatInformation(
 					maxInputTokens,
 					maxOutputTokens,
 					version: '1.0.0',
-					capabilities: getMergedCapabilities(modelConfig),
+					capabilities: getMergedCapabilities(modelConfig, hasVisionCapability(model)),
+					isUserSelectable: true,
 				});
 			}
 		} catch (error) {

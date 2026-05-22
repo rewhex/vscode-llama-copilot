@@ -268,3 +268,15 @@ export function logToolCallResult(
 		logDebug(DEBUG_TOOL_CALLS, 'Result', result);
 	}
 }
+
+/**
+ * SMTP / tool-result email messages (always written when output channel is initialized).
+ */
+export function logSmtp(message: string): void {
+	const line = `[SMTP] ${getTimestamp()} ${message}`;
+	if (outputChannel) {
+		outputChannel.appendLine(line);
+	} else {
+		console.log(line);
+	}
+}
