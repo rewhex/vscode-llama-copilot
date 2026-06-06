@@ -4,7 +4,7 @@ import { EndpointsConfig } from './types';
 import { RuleManager } from './cursor-rules/ruleManager';
 import { CursorRulesTool, CURSOR_RULES_TOOL_NAME, resolveAndFormatRules } from './cursor-rules/index';
 import { logRulesMatching, logToolCall, logToolCallResult } from './logger';
-import { getRequestTimeoutMs, getPromptProgressStatusBarThresholdSeconds, isCursorRulesEnabled as isCursorRulesEnabledConfig } from './config';
+import { getRequestTimeoutMs, getPromptProgressStatusBarThresholdSeconds, getMinPromptProgressElapsedMs, isCursorRulesEnabled as isCursorRulesEnabledConfig } from './config';
 import { estimatePromptProgress, formatRemaining } from './promptProgressEstimate';
 import {
 	parseModelId,
@@ -301,9 +301,11 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 				// Handle different chunk types
 				if (chunk.type === 'prompt_progress') {
 					const threshold = getPromptProgressStatusBarThresholdSeconds();
+					const minElapsed = getMinPromptProgressElapsedMs();
 					const result = estimatePromptProgress(
 						{ total: chunk.total, processed: chunk.processed, time_ms: chunk.time_ms },
-						threshold
+						threshold,
+						minElapsed
 					);
 					const shouldShowOrUpdate = result.showStatusBar || promptProgressShown;
 					const msg =
@@ -461,9 +463,11 @@ export class LlamaCopilotChatProvider implements vscode.LanguageModelChatProvide
 				// Handle different chunk types
 				if (chunk.type === 'prompt_progress') {
 					const threshold = getPromptProgressStatusBarThresholdSeconds();
+					const minElapsed = getMinPromptProgressElapsedMs();
 					const result = estimatePromptProgress(
 						{ total: chunk.total, processed: chunk.processed, time_ms: chunk.time_ms },
-						threshold
+						threshold,
+						minElapsed
 					);
 					const shouldShowOrUpdate = result.showStatusBar || promptProgressShown;
 					const msg =
