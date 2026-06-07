@@ -12249,6 +12249,8 @@ declare module 'vscode' {
 		/**
 		 * Get the children of `element` or root if no element is passed.
 		 *
+		 * *Note:* The result is not mutated by the API consumer; readonly arrays may be cast to `T[]`.
+		 *
 		 * @param element The element from which the provider gets children. Can be `undefined`.
 		 * @returns Children of `element` or root if no element is passed.
 		 */
@@ -20624,11 +20626,6 @@ declare module 'vscode' {
 		 * Various features that the model supports such as tool calling or image input.
 		 */
 		readonly capabilities: LanguageModelChatCapabilities;
-
-		/**
-		 * Whether the model appears in the chat model picker for user selection.
-		 */
-		readonly isUserSelectable?: boolean;
 	}
 
 	/**
