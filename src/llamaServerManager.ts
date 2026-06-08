@@ -46,11 +46,7 @@ export class LlamaServerManager {
 
 		this.config = cfg;
 
-		if (sameConfig && this.sshClient.connected) {
-			return; // No change, already connected
-		}
-
-		// Restart polling with new config
+		// Always restart polling when config changes (or even if same, to ensure it's running)
 		this.stopPolling();
 		this.startPolling();
 	}
@@ -104,9 +100,10 @@ export class LlamaServerManager {
 			this.notifyResources(resources);
 		} catch (err) {
 			this.logger.debug(`[LlamaServer] Poll error: ${err}`);
-			// Try reconnecting on next poll
+			// Connection failed - disconnect and notify status as disconnected
 			await this.sshClient.disconnect().catch(() => {});
 			this.notifyStatus(false);
+			this.notifyResources(this.getDisconnectedResources());
 		}
 	}
 
@@ -221,12 +218,25 @@ export class LlamaServerManager {
 	}
 
 	/**
+	 * Ensure SSH connection is established
+	 */
+	private async ensureConnected(): Promise<void> {
+		if (!this.config || this.sshClient.connected) {
+			return;
+		}
+		this.logger.info('[LlamaServer] Establishing SSH connection for command execution...');
+		await this.sshClient.connect(this.config);
+		this.notifyStatus(true);
+	}
+
+	/**
 	 * Start llama server
 	 */
 	async startServer(startCommand: string): Promise<void> {
 		this.logger.info('[LlamaServer] Starting server...');
 		try {
-			const result = await this.sshClient.exec(startCommand);
+			await this.ensureConnected();
+			await this.sshClient.exec(startCommand);
 			this.logger.info(`[LlamaServer] Server started`);
 		} catch (err: unknown) {
 			const msg = err instanceof Error ? err.message : String(err);
@@ -241,7 +251,8 @@ export class LlamaServerManager {
 	async stopServer(stopCommand: string): Promise<void> {
 		this.logger.info('[LlamaServer] Stopping server...');
 		try {
-			const result = await this.sshClient.exec(stopCommand);
+			await this.ensureConnected();
+			await this.sshClient.exec(stopCommand);
 			this.logger.info(`[LlamaServer] Server stopped`);
 		} catch (err: unknown) {
 			const msg = err instanceof Error ? err.message : String(err);
@@ -255,16 +266,14 @@ export class LlamaServerManager {
 	 */
 	async shutdownServer(shutdownCommand: string): Promise<void> {
 		this.logger.info('[LlamaServer] Initiating shutdown...');
-		this.stopPolling();
 		try {
-			const result = await this.sshClient.exec(shutdownCommand);
+			await this.ensureConnected();
+			await this.sshClient.exec(shutdownCommand);
 			this.logger.info(`[LlamaServer] Shutdown command sent`);
 		} catch (err: unknown) {
 			const msg = err instanceof Error ? err.message : String(err);
 			this.logger.error(`[LlamaServer] Failed to shutdown: ${msg}`);
 			throw err;
-		} finally {
-			await this.sshClient.disconnect().catch(() => {});
 		}
 	}
 
