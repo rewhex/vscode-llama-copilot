@@ -227,7 +227,7 @@ export class LlamaServerManager {
 		this.logger.info('[LlamaServer] Starting server...');
 		try {
 			const result = await this.sshClient.exec(startCommand);
-			this.logger.info(`[LlamaServer] Server started: ${result.stdout}`);
+			this.logger.info(`[LlamaServer] Server started`);
 		} catch (err: unknown) {
 			const msg = err instanceof Error ? err.message : String(err);
 			this.logger.error(`[LlamaServer] Failed to start server: ${msg}`);
@@ -242,7 +242,7 @@ export class LlamaServerManager {
 		this.logger.info('[LlamaServer] Stopping server...');
 		try {
 			const result = await this.sshClient.exec(stopCommand);
-			this.logger.info(`[LlamaServer] Server stopped: ${result.stdout}`);
+			this.logger.info(`[LlamaServer] Server stopped`);
 		} catch (err: unknown) {
 			const msg = err instanceof Error ? err.message : String(err);
 			this.logger.error(`[LlamaServer] Failed to stop server: ${msg}`);
@@ -258,7 +258,7 @@ export class LlamaServerManager {
 		this.stopPolling();
 		try {
 			const result = await this.sshClient.exec(shutdownCommand);
-			this.logger.info(`[LlamaServer] Shutdown command sent: ${result.stdout}`);
+			this.logger.info(`[LlamaServer] Shutdown command sent`);
 		} catch (err: unknown) {
 			const msg = err instanceof Error ? err.message : String(err);
 			this.logger.error(`[LlamaServer] Failed to shutdown: ${msg}`);
