@@ -358,7 +358,7 @@
 				"llamaCopilot.llamaServer.startModelRefreshDelayMs": {
 					"type": "number",
 					"default": 1000,
-					"description": "Delay in milliseconds after starting the llama server before refreshing the model list. The start command returns immediately, so this waits for the server process to be ready."
+					"description": "Delay in milliseconds after starting the llama server before refreshing the model list. Increase if your server takes longer to start or if you have many models."
 				}
 			}
 		}

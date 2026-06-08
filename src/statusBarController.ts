@@ -5,7 +5,8 @@ export class StatusBarController {
 	private statusBarItem: vscode.StatusBarItem;
 	private readonly manager: LlamaServerManager;
 	private readonly logger: vscode.LogOutputChannel;
-	private onModelChange?: () => void;
+
+	private onModelChange: () => void;
 
 	private resources: ServerResources = {
 		ramUsage: '-',
@@ -99,9 +100,8 @@ export class StatusBarController {
 			// The start command returns immediately, but the process needs time to initialize
 			const config = vscode.workspace.getConfiguration('llamaCopilot');
 			const startDelayMs = config.get<number>('llamaServer.startModelRefreshDelayMs', 1000);
-			if (this.onModelChange) {
-				setTimeout(() => this.onModelChange!(), startDelayMs);
-			}
+
+			setTimeout(() => this.onModelChange!(), startDelayMs);
 		} catch (err: unknown) {
 			const msg = err instanceof Error ? err.message : String(err);
 			vscode.window.showErrorMessage(`Llama Server Start Failed: ${msg}`);
@@ -176,9 +176,7 @@ export class StatusBarController {
 	private async handleRefresh(): Promise<void> {
 		this.logger.info('[StatusBar] Manual refresh triggered');
 		// Refresh model list on manual refresh
-		if (this.onModelChange) {
-			setTimeout(() => this.onModelChange!(), 0);
-		}
+		setTimeout(() => this.onModelChange!(), 0);
 	}
 
 	/**
